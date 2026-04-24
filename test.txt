@@ -1,0 +1,4 @@
+Hello World! This is a test file for compression.
+AAAAABBBBBCCCCCDDDDDEEEEE
+This is a simple test to verify compression works.
+The quick brown fox jumps over the lazy dog.
