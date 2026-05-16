@@ -48,7 +48,7 @@ struct BlockManager {
     vector<Block> blocks;
     size_t block_size;          // Configurable block size
 
-    BlockManager() : block_size(500 * 1024) {}
+    BlockManager() : block_size(50 * 1024) {}
 };
 
 // Configuration structure for all compression settings
@@ -69,7 +69,7 @@ struct CompressionConfig {
     string input_directory;     // Input directory path
 
     CompressionConfig()
-        : block_size(500 * 1024),
+        : block_size(50 * 1024),
         rle1_enabled(true),
         bwt_type("matrix"),
         mtf_enabled(true),

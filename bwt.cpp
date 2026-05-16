@@ -4,30 +4,40 @@
 
 using namespace std;
 
-// Sort indices using virtual cyclic-rotation comparison on the original buffer.
-// O(n) space (indices only), avoids the O(n^2) memory of storing all rotations.
-// Uses unsigned char comparison so bytes 0x80-0xFF sort correctly (no signed-char bug).
+// BWT encode using prefix doubling (O(n log^2 n)).
+// Each round doubles the comparison window and re-ranks positions,
+// replacing the O(n^2 log n) character-by-character sort.
 BWTResult bwt_encode(const vector<unsigned char>& input) {
     BWTResult result;
     if (input.empty()) return result;
 
-    size_t len = input.size();
-    vector<int> indices(len);
-    iota(indices.begin(), indices.end(), 0);
+    int n = (int)input.size();
+    vector<int> sa(n), rank_(n), tmp(n);
 
-    sort(indices.begin(), indices.end(), [&](int a, int b) {
-        for (size_t k = 0; k < len; k++) {
-            unsigned char ca = input[(a + k) % len];
-            unsigned char cb = input[(b + k) % len];
-            if (ca != cb) return ca < cb;
-        }
-        return a < b;
-    });
+    iota(sa.begin(), sa.end(), 0);
+    for (int i = 0; i < n; i++) rank_[i] = input[i];
 
-    result.data.resize(len);
-    for (size_t i = 0; i < len; i++) {
-        if (indices[i] == 0) result.primary_index = (int)i;
-        result.data[i] = input[(indices[i] + len - 1) % len];
+    for (int gap = 1; gap < n; gap <<= 1) {
+        // Sort by (rank[i], rank[(i+gap) % n]) — cyclic window of width 2*gap
+        auto cmp = [&](int a, int b) {
+            if (rank_[a] != rank_[b]) return rank_[a] < rank_[b];
+            return rank_[(a + gap) % n] < rank_[(b + gap) % n];
+        };
+        sort(sa.begin(), sa.end(), cmp);
+
+        // Reassign ranks: equal pairs get the same rank
+        tmp[sa[0]] = 0;
+        for (int i = 1; i < n; i++)
+            tmp[sa[i]] = tmp[sa[i-1]] + (cmp(sa[i-1], sa[i]) ? 1 : 0);
+        rank_ = tmp;
+
+        if (rank_[sa[n-1]] == n-1) break;  // all ranks unique — done early
+    }
+
+    result.data.resize(n);
+    for (int i = 0; i < n; i++) {
+        if (sa[i] == 0) result.primary_index = i;
+        result.data[i] = input[(sa[i] + n - 1) % n];
     }
     return result;
 }
