@@ -4,6 +4,7 @@
 #include "huffman.h"
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <chrono>
 #include <iterator>
 
@@ -148,65 +149,83 @@ vector<unsigned char> Compressor::apply_rle1(const vector<unsigned char>& data, 
     }
 }
 
-// Process a block through all transforms
+// Process a block through all transforms.
+// Flag byte is prepended: 0x01 = compressed, 0x00 = stored raw (when compression didn't help).
 vector<unsigned char> Compressor::process_block(const vector<unsigned char>& block, bool compress) {
     vector<unsigned char> data = block;
-    
+
     if (compress) {
-        // Compression pipeline (reverse order of decompression)
         if (config_.rle1_enabled) {
             data = apply_rle1(data, true);
             cout << "  After RLE-1: " << data.size() << " bytes" << endl;
         }
-        
         if (config_.bwt_type == "matrix") {
             data = apply_bwt(data, true);
             cout << "  After BWT: " << data.size() << " bytes" << endl;
         }
-        
         if (config_.mtf_enabled) {
             data = apply_mtf(data, true);
             cout << "  After MTF: " << data.size() << " bytes" << endl;
         }
-        
         if (config_.rle2_enabled) {
             data = apply_rle2(data, true);
             cout << "  After RLE-2: " << data.size() << " bytes" << endl;
         }
-        
         if (config_.huffman_enabled) {
             data = apply_huffman(data, true);
             cout << "  After Huffman: " << data.size() << " bytes" << endl;
         }
+
+        // If pipeline made the block larger, store original data raw (with flag 0x00).
+        // This prevents small files or already-compressed data from expanding.
+        vector<unsigned char> result;
+        if (data.size() < block.size()) {
+            result.reserve(1 + data.size());
+            result.push_back(0x01);  // compressed
+            result.insert(result.end(), data.begin(), data.end());
+            cout << "  Stored compressed." << endl;
+        } else {
+            result.reserve(1 + block.size());
+            result.push_back(0x00);  // raw passthrough
+            result.insert(result.end(), block.begin(), block.end());
+            cout << "  Stored raw (compression did not help for this block)." << endl;
+        }
+        return result;
+
     } else {
-        // Decompression pipeline (reverse order)
+        // Read flag byte first
+        if (data.empty()) return {};
+        unsigned char flag = data[0];
+        data = vector<unsigned char>(data.begin() + 1, data.end());
+
+        if (flag == 0x00) {
+            // Raw passthrough — return as-is
+            return data;
+        }
+
+        // flag == 0x01: run full decompression pipeline
         if (config_.huffman_enabled) {
             data = apply_huffman(data, false);
             cout << "  After Huffman decode: " << data.size() << " bytes" << endl;
         }
-        
         if (config_.rle2_enabled) {
             data = apply_rle2(data, false);
             cout << "  After RLE-2 decode: " << data.size() << " bytes" << endl;
         }
-        
         if (config_.mtf_enabled) {
             data = apply_mtf(data, false);
             cout << "  After MTF decode: " << data.size() << " bytes" << endl;
         }
-        
         if (config_.bwt_type == "matrix") {
             data = apply_bwt(data, false);
             cout << "  After BWT decode: " << data.size() << " bytes" << endl;
         }
-        
         if (config_.rle1_enabled) {
             data = apply_rle1(data, false);
             cout << "  After RLE-1 decode: " << data.size() << " bytes" << endl;
         }
+        return data;
     }
-    
-    return data;
 }
 
 // Compress a file
@@ -255,9 +274,11 @@ bool Compressor::compress(const string& input_file, const string& output_file) {
         output.write(reinterpret_cast<char*>(compressed_block.data()), block_size);
         
         compressed_size_ += block_size;
-        cout << "  Block " << i << " compressed from " << block_data.size() 
-             << " to " << compressed_block.size() << " bytes (Ratio: " 
-             << (100.0 * compressed_block.size() / block_data.size()) << "%)" << endl;
+        double ratio = (double)original_size_ > 0
+            ? (double)compressed_block.size() / block_data.size() : 1.0;
+        cout << "  Block " << i << ": " << block_data.size()
+             << " -> " << compressed_block.size() << " bytes"
+             << " (" << fixed << setprecision(2) << ratio << "x ratio)" << endl;
     }
     
     output.close();
@@ -266,10 +287,15 @@ bool Compressor::compress(const string& input_file, const string& output_file) {
     auto duration = chrono::duration_cast<chrono::milliseconds>(end_time - start_time);
     
     cout << "\nCompression complete!" << endl;
-    cout << "Original size: " << original_size_ << " bytes" << endl;
+    cout << "Original size:   " << original_size_ << " bytes" << endl;
     cout << "Compressed size: " << compressed_size_ << " bytes" << endl;
-    cout << "Compression ratio: " << (100.0 * compressed_size_ / original_size_) << "%" << endl;
-    cout << "Time taken: " << duration.count() << " ms" << endl;
+    long long saved = (long long)original_size_ - (long long)compressed_size_;
+    if (saved >= 0)
+        cout << "Space saved:     " << saved << " bytes ("
+             << fixed << setprecision(2) << (100.0 * saved / original_size_) << "%)" << endl;
+    else
+        cout << "Size increased:  " << -saved << " bytes (file too small to compress)" << endl;
+    cout << "Time taken:      " << duration.count() << " ms" << endl;
     
     return true;
 }
@@ -343,8 +369,15 @@ bool Compressor::decompress(const string& input_file, const string& output_file)
 
 void Compressor::print_stats() const {
     cout << "\n=== Compression Statistics ===" << endl;
-    cout << "Original size: " << original_size_ << " bytes" << endl;
+    cout << "Original size:   " << original_size_ << " bytes" << endl;
     cout << "Compressed size: " << compressed_size_ << " bytes" << endl;
-    cout << "Space saved: " << (original_size_ - compressed_size_) << " bytes" << endl;
-    cout << "Compression ratio: " << (100.0 * compressed_size_ / original_size_) << "%" << endl;
+    long long saved = (long long)original_size_ - (long long)compressed_size_;
+    if (saved >= 0)
+        cout << "Space saved:     " << saved << " bytes ("
+             << fixed << setprecision(2) << (100.0 * saved / original_size_) << "%)" << endl;
+    else
+        cout << "Size increased:  " << -saved << " bytes (file too small to compress)" << endl;
+    if (compressed_size_ > 0)
+        cout << "Compression ratio: " << fixed << setprecision(2)
+             << (double)original_size_ / compressed_size_ << ":1" << endl;
 }
