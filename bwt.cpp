@@ -1,70 +1,66 @@
 #include "bwt.h"
 #include <algorithm>
+#include <numeric>
 
 using namespace std;
 
-// Compare two rotations for sorting
-static bool compare_rotations(const Rotation& a, const Rotation& b) {
-    return a.rotation < b.rotation;
-}
-
-// Matrix-based BWT encoding
+// Sort indices using virtual cyclic-rotation comparison on the original buffer.
+// O(n) space (indices only), avoids the O(n^2) memory of storing all rotations.
+// Uses unsigned char comparison so bytes 0x80-0xFF sort correctly (no signed-char bug).
 BWTResult bwt_encode(const vector<unsigned char>& input) {
     BWTResult result;
-
     if (input.empty()) return result;
 
     size_t len = input.size();
-    string s(input.begin(), input.end());
+    vector<int> indices(len);
+    iota(indices.begin(), indices.end(), 0);
 
-    // Create all rotations
-    vector<Rotation> rotations;
-    rotations.reserve(len);
+    sort(indices.begin(), indices.end(), [&](int a, int b) {
+        for (size_t k = 0; k < len; k++) {
+            unsigned char ca = input[(a + k) % len];
+            unsigned char cb = input[(b + k) % len];
+            if (ca != cb) return ca < cb;
+        }
+        return a < b;
+    });
 
-    for (size_t i = 0; i < len; i++) {
-        string rotation = s.substr(i) + s.substr(0, i);
-        rotations.emplace_back(rotation, i);
-    }
-
-    // Sort rotations lexicographically
-    sort(rotations.begin(), rotations.end(), compare_rotations);
-
-    // Extract last column and find primary index
     result.data.resize(len);
     for (size_t i = 0; i < len; i++) {
-        result.data[i] = rotations[i].rotation.back();
-        if (rotations[i].index == 0) {
-            result.primary_index = i;
-        }
+        if (indices[i] == 0) result.primary_index = (int)i;
+        result.data[i] = input[(indices[i] + len - 1) % len];
     }
-
     return result;
 }
 
-// Inverse BWT transform
+// Inverse BWT using the T-mapping (LF-mapping) algorithm.
+// T[i] = the position in sorted-F that L[i] maps to (stable sort property).
+// Reconstruct going right-to-left: output[i] = L[idx]; idx = T[idx].
 vector<unsigned char> bwt_decode(const vector<unsigned char>& input, int primary_index) {
-    vector<unsigned char> output;
-
-    if (input.empty()) return output;
+    if (input.empty()) return {};
 
     size_t len = input.size();
 
-    // Create table of characters
-    vector<pair<unsigned char, int>> table(len);
-    for (size_t i = 0; i < len; i++) {
-        table[i] = { input[i], i };
+    int freq[256] = {};
+    for (unsigned char c : input) freq[c]++;
+
+    // Start positions of each byte in sorted order (first column F)
+    int start[256];
+    start[0] = 0;
+    for (int c = 1; c < 256; c++) start[c] = start[c-1] + freq[c-1];
+
+    // Build T-mapping: T[i] = F-position that L[i] maps to
+    vector<int> T(len);
+    int cur[256];
+    copy(start, start + 256, cur);
+    for (size_t i = 0; i < len; i++)
+        T[i] = cur[(unsigned char)input[i]]++;
+
+    // Reconstruct original string right-to-left
+    vector<unsigned char> output(len);
+    int idx = primary_index;
+    for (int i = (int)len - 1; i >= 0; i--) {
+        output[i] = input[idx];
+        idx = T[idx];
     }
-
-    // Sort by character
-    sort(table.begin(), table.end());
-
-    // Reconstruct original string
-    output.reserve(len);
-    int next = primary_index;
-    for (size_t i = 0; i < len; i++) {
-        next = table[next].second;
-        output.push_back(table[next].first);
-    }
-
     return output;
 }

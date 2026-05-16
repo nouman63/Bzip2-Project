@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iostream>
 #include <chrono>
+#include <iterator>
 
 using namespace std;
 
@@ -65,65 +66,46 @@ vector<unsigned char> Compressor::apply_mtf(const vector<unsigned char>& data, b
     }
 }
 
-// RLE-2 encoding (run-length encoding with run lengths > 3)
-// RLE-2 encoding/decoding
+// RLE-2: compresses zero runs produced by MTF using an unambiguous 3-case scheme:
+//   0x00 <count> : a run of 'count' zeros (count 1-255)
+//   0x01 <byte>  : literal escape for bytes 0 and 255
+//   byte+1       : for bytes 1-254 (stored as 2-255, never collides with tags)
 vector<unsigned char> Compressor::apply_rle2(const vector<unsigned char>& data, bool compress) {
     if (compress) {
         vector<unsigned char> output;
         size_t i = 0;
-
         while (i < data.size()) {
-            size_t run_length = 1;
-            while (i + run_length < data.size() &&
-                data[i + run_length] == data[i] &&
-                run_length < 255) {
-                run_length++;
-            }
-
-            if (run_length >= 4) {
-                // Encode run: [symbol, length]
-                output.push_back(data[i]);
-                output.push_back(static_cast<unsigned char>(run_length));
-                i += run_length;
-            }
-            else {
-                // Output as is
-                for (size_t j = 0; j < run_length; j++) {
-                    output.push_back(data[i + j]);
-                }
-                i += run_length;
+            if (data[i] == 0) {
+                size_t run = 0;
+                while (i < data.size() && data[i] == 0 && run < 255) { run++; i++; }
+                output.push_back(0x00);
+                output.push_back((unsigned char)run);
+            } else if (data[i] == 255) {
+                output.push_back(0x01);
+                output.push_back(255);
+                i++;
+            } else {
+                output.push_back(data[i] + 1);  // maps 1-254 to 2-255
+                i++;
             }
         }
         return output;
-    }
-    else {
-        // RLE-2 Decoding
+    } else {
         vector<unsigned char> output;
         size_t i = 0;
-
         while (i < data.size()) {
-            // Check if this is a run-length encoded pair
-            // For simplicity, assume runs are encoded as [symbol, length] where length >= 4
-            if (i + 1 < data.size()) {
-                // Look ahead to see if next byte is a valid length (4-255)
-                // This is a simplified approach
-                unsigned char next = data[i + 1];
-                if (next >= 4) {
-                    // This is an encoded run
-                    unsigned char symbol = data[i];
-                    unsigned char length = next;
-                    for (unsigned char j = 0; j < length; j++) {
-                        output.push_back(symbol);
-                    }
-                    i += 2;
-                    continue;
-                }
+            unsigned char b = data[i++];
+            if (b == 0x00) {
+                if (i >= data.size()) break;
+                unsigned char count = data[i++];
+                for (unsigned char k = 0; k < count; k++) output.push_back(0);
+            } else if (b == 0x01) {
+                if (i >= data.size()) break;
+                output.push_back(data[i++]);
+            } else {
+                output.push_back(b - 1);  // maps 2-255 back to 1-254
             }
-            // Not an encoded run, output as is
-            output.push_back(data[i]);
-            i++;
         }
-
         return output;
     }
 }
@@ -148,28 +130,12 @@ vector<unsigned char> Compressor::apply_bwt(const vector<unsigned char>& data, b
     }
 }
 
-// Apply Huffman coding
+// Apply Huffman coding using canonical Huffman with self-contained serialization.
 vector<unsigned char> Compressor::apply_huffman(const vector<unsigned char>& data, bool compress) {
     if (compress) {
-        auto result = huffman_encode(data);
-        // Convert bits to bytes for storage
-        vector<unsigned char> output;
-        size_t bit_count = result.encoded_data.size();
-        size_t byte_count = (bit_count + 7) / 8;
-        output.resize(byte_count);
-        
-        for (size_t i = 0; i < bit_count; i++) {
-            if (result.encoded_data[i]) {
-                output[i / 8] |= (1 << (7 - (i % 8)));
-            }
-        }
-        
-        // TODO: Store Huffman tree for decoding
-        return output;
+        return huffman_compress(data);
     } else {
-        // Decompress Huffman
-        // TODO: Implement with tree reconstruction
-        return data;
+        return huffman_decompress(data);
     }
 }
 
